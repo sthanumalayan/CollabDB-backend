@@ -3,11 +3,9 @@ import mongoose from "mongoose";
 import { nanoid } from "nanoid";
 import cors from "cors";
 import QRCode from "qrcode";
-import dotenv from "dotenv";
 import { user } from "./models/userschema.js";
 import { group } from "./models/groupschema.js";
 
-dotenv.config(); // Load env vars from .env
 
 const app = express();
 const port = process.env.PORT || 3000;
