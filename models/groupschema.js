@@ -21,7 +21,7 @@ const groupschema = new mongoose.Schema({
   paymentMatrix: {
     type: Map,
     of: Map,
-    default: ()=>new Map();
+    default: ()=>new Map()
   }
 
 
