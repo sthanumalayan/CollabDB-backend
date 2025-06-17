@@ -19,12 +19,8 @@ const groupschema = new mongoose.Schema({
   members: [String], // array of userIDs
 
   paymentMatrix: {
-    type: Map,
-    of: {
-      type: Map,
-      of: Number, // amount owed (in rupees or paise)
-    },
-    default: {}, // initialize as empty object
+  type: Object,
+  default: {}
   }
 
 }, { collection: 'Groups' });
