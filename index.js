@@ -84,115 +84,105 @@ app.post('/view', async (req, res) => {
   res.json({ groups });
 });
 
-// Join Route
 app.post('/join', async (req, res) => {
-  try {
-    const Group = await group.findOne({ groupID: req.body.group.groupID });
-    const User = await user.findOne({ username: req.body.username });
+  const Group = await group.findOne({ groupID: req.body.group.groupID });
+  const User = await user.findOne({ username: req.body.username });
 
-    if (!Group || !User) return res.status(404).json({ error: 'Group or user not found' });
+  if (!Group || !User) return res.status(404).json({ error: 'Invalid group or user' });
 
-    if (Group.members.includes(User.username)) {
-      return res.status(200).json({ alreadyJoined: true, group: Group });
-    }
-
-    // Ensure paymentMatrix is an object
-    if (!Group.paymentMatrix) Group.paymentMatrix = {};
-
-    // Add empty debt map for new user
-    if (!Group.paymentMatrix[User.userID]) {
-      Group.paymentMatrix[User.userID] = {};
-    }
-
-    for (let member of Group.members) {
-      const m = await user.findOne({ username: member });
-      if (!m) continue;
-
-      // Initialize both directions if not already set
-      if (!Group.paymentMatrix[m.userID]) Group.paymentMatrix[m.userID] = {};
-
-      Group.paymentMatrix[User.userID][m.userID] = Group.paymentMatrix[User.userID][m.userID] || 0;
-      Group.paymentMatrix[m.userID][User.userID] = Group.paymentMatrix[m.userID][User.userID] || 0;
-    }
-
-    User.groups.push(Group.groupID);
-    Group.members.push(User.username);
-
-    await User.save();
-    await Group.save();
-
-    res.status(200).json({ alreadyJoined: false, group: Group });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error during join' });
+  if (Group.members.includes(User.username)) {
+    return res.status(200).json({ alreadyJoined: true, group: Group });
   }
+
+  const newUserID = User.userID;
+
+  // Initialize paymentMatrix entries for the new user
+  if (!Group.paymentMatrix.has(newUserID)) {
+    Group.paymentMatrix.set(newUserID, new Map());
+  }
+
+  for (let member of Group.members) {
+    const m = await user.findOne({ username: member });
+    if (!m) continue;
+
+    const existing = Group.paymentMatrix.get(m.userID) || new Map();
+    existing.set(newUserID, 0);
+    Group.paymentMatrix.set(m.userID, existing);
+
+    const newUserEntry = Group.paymentMatrix.get(newUserID);
+    newUserEntry.set(m.userID, 0);
+    Group.paymentMatrix.set(newUserID, newUserEntry);
+  }
+
+  Group.members.push(User.username);
+  User.groups.push(Group.groupID);
+
+  await User.save();
+  await Group.save();
+
+  res.status(200).json({ alreadyJoined: false, group: Group });
 });
 
-// Expense Route
 app.post('/expense', async (req, res) => {
-  try {
-    const { amount, selectedMembers, username, groupId } = req.body;
+  const { amount, selectedMembers, username, groupId } = req.body;
 
-    if (!amount || !selectedMembers || !username || !groupId) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    const payer = await user.findOne({ username });
-    const groupDoc = await group.findOne({ groupID: groupId });
-
-    if (!payer || !groupDoc) {
-      return res.status(404).json({ error: 'User or group not found' });
-    }
-
-    if (!groupDoc.paymentMatrix) groupDoc.paymentMatrix = {};
-
-    const splitAmount = parseFloat(amount) / selectedMembers.length;
-
-    for (const mem of selectedMembers) {
-      if (mem === username) continue;
-
-      const m = await user.findOne({ username: mem });
-      if (!m) continue;
-
-      if (!groupDoc.paymentMatrix[m.userID]) {
-        groupDoc.paymentMatrix[m.userID] = {};
-      }
-
-      groupDoc.paymentMatrix[m.userID][payer.userID] =
-        (groupDoc.paymentMatrix[m.userID][payer.userID] || 0) + splitAmount;
-    }
-
-    await groupDoc.save();
-    res.status(200).json({ message: 'Expense recorded and dues updated' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error during expense recording' });
+  if (!amount || !selectedMembers || !username || !groupId) {
+    return res.status(400).json({ error: 'Missing required fields' });
   }
+
+  const payer = await user.findOne({ username });
+  const groupDoc = await group.findOne({ groupID: groupId });
+
+  if (!payer || !groupDoc) return res.status(404).json({ error: 'User or group not found' });
+
+  const payerID = payer.userID;
+  const splitAmount = parseFloat(amount) / selectedMembers.length;
+
+  for (const mem of selectedMembers) {
+    if (mem === username) continue;
+    const m = await user.findOne({ username: mem });
+    if (!m) continue;
+
+    const memberID = m.userID;
+
+    // Initialize nested maps
+    if (!groupDoc.paymentMatrix.has(memberID)) {
+      groupDoc.paymentMatrix.set(memberID, new Map());
+    }
+
+    const memberMap = groupDoc.paymentMatrix.get(memberID);
+    const current = memberMap.get(payerID) || 0;
+    memberMap.set(payerID, current + splitAmount);
+
+    groupDoc.paymentMatrix.set(memberID, memberMap);
+  }
+
+  await groupDoc.save();
+  res.status(200).json({ message: 'Expense recorded and dues updated' });
 });
 
 
-// Dues Route
+
 app.post('/dues', async (req, res) => {
-  try {
-    const { groupId, from, to } = req.body;
+  const { groupId, from, to } = req.body;
 
-    const fromUser = await user.findOne({ username: from });
-    const toUser = await user.findOne({ username: to });
-    const grp = await group.findOne({ groupID: groupId });
+  const fromUser = await user.findOne({ username: from });
+  const toUser = await user.findOne({ username: to });
+  const grp = await group.findOne({ groupID: groupId });
 
-    if (!fromUser || !toUser || !grp || !grp.paymentMatrix) {
-      return res.status(404).json({ error: 'Invalid users or group' });
-    }
-
-    const amount = grp.paymentMatrix[fromUser.userID]?.[toUser.userID] || 0;
-    const upiUrl = `upi://pay?pa=${toUser.upiID}&pn=${encodeURIComponent(toUser.username)}&am=${amount}&cu=INR`;
-    const qrDataUrl = await QRCode.toDataURL(upiUrl);
-
-    res.status(200).json({ amount, qr: qrDataUrl });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error during dues lookup' });
+  if (!fromUser || !toUser || !grp) {
+    return res.status(404).json({ error: 'Missing or invalid users/group' });
   }
+
+  const fromID = fromUser.userID;
+  const toID = toUser.userID;
+
+  const amount = grp.paymentMatrix?.get(fromID)?.get(toID) || 0;
+
+  const upiUrl = `upi://pay?pa=${toUser.upiID}&pn=${encodeURIComponent(toUser.username)}&am=${amount}&cu=INR`;
+  const qrDataUrl = await QRCode.toDataURL(upiUrl);
+
+  res.status(200).json({ amount, qr: qrDataUrl });
 });
 
 
