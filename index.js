@@ -84,81 +84,117 @@ app.post('/view', async (req, res) => {
   res.json({ groups });
 });
 
+// Join Route
 app.post('/join', async (req, res) => {
-  const Group = await group.findOne({ groupID: req.body.group.groupID });
-  const User = await user.findOne({ username: req.body.username });
+  try {
+    const Group = await group.findOne({ groupID: req.body.group.groupID });
+    const User = await user.findOne({ username: req.body.username });
 
-  if (Group.members.includes(User.username)) {
-    return res.status(200).json({ alreadyJoined: true, group: Group });
-  }
+    if (!Group || !User) return res.status(404).json({ error: 'Group or user not found' });
 
-  if (!Group.paymentMatrix[User.userID]) {
-    Group.paymentMatrix[User.userID] = {};
-  }
-
-  for (let member of Group.members) {
-    const m = await user.findOne({ username: member });
-    if (!Group.paymentMatrix[m.userID]) {
-      Group.paymentMatrix[m.userID] = {};
+    if (Group.members.includes(User.username)) {
+      return res.status(200).json({ alreadyJoined: true, group: Group });
     }
 
-    Group.paymentMatrix[User.userID][m.userID] = 0;
-    Group.paymentMatrix[m.userID][User.userID] = 0;
+    // Ensure paymentMatrix is an object
+    if (!Group.paymentMatrix) Group.paymentMatrix = {};
+
+    // Add empty debt map for new user
+    if (!Group.paymentMatrix[User.userID]) {
+      Group.paymentMatrix[User.userID] = {};
+    }
+
+    for (let member of Group.members) {
+      const m = await user.findOne({ username: member });
+      if (!m) continue;
+
+      // Initialize both directions if not already set
+      if (!Group.paymentMatrix[m.userID]) Group.paymentMatrix[m.userID] = {};
+
+      Group.paymentMatrix[User.userID][m.userID] = Group.paymentMatrix[User.userID][m.userID] || 0;
+      Group.paymentMatrix[m.userID][User.userID] = Group.paymentMatrix[m.userID][User.userID] || 0;
+    }
+
+    User.groups.push(Group.groupID);
+    Group.members.push(User.username);
+
+    await User.save();
+    await Group.save();
+
+    res.status(200).json({ alreadyJoined: false, group: Group });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error during join' });
   }
-
-  User.groups.push(Group.groupID);
-  Group.members.push(User.username);
-  await User.save();
-  await Group.save();
-
-  res.status(200).json({ alreadyJoined: false, group: Group });
 });
 
+// Expense Route
 app.post('/expense', async (req, res) => {
-  const { amount, selectedMembers, username, groupId } = req.body;
-  if (!amount || !selectedMembers || !username || !groupId) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
+  try {
+    const { amount, selectedMembers, username, groupId } = req.body;
 
-  const payer = await user.findOne({ username });
-  const groupDoc = await group.findOne({ groupID: groupId });
-  if (!payer || !groupDoc) return res.status(404).json({ error: 'User or group not found' });
-
-  const splitAmount = parseFloat(amount) / selectedMembers.length;
-
-  for (const mem of selectedMembers) {
-    if (mem === username) continue;
-    const m = await user.findOne({ username: mem });
-    if (!m) continue;
-
-    if (!groupDoc.paymentMatrix[m.userID]) {
-      groupDoc.paymentMatrix[m.userID] = {};
+    if (!amount || !selectedMembers || !username || !groupId) {
+      return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    groupDoc.paymentMatrix[m.userID][payer.userID] =
-      (groupDoc.paymentMatrix[m.userID][payer.userID] || 0) + splitAmount;
-  }
+    const payer = await user.findOne({ username });
+    const groupDoc = await group.findOne({ groupID: groupId });
 
-  await groupDoc.save();
-  res.status(200).json({ message: 'Expense recorded and dues updated' });
+    if (!payer || !groupDoc) {
+      return res.status(404).json({ error: 'User or group not found' });
+    }
+
+    if (!groupDoc.paymentMatrix) groupDoc.paymentMatrix = {};
+
+    const splitAmount = parseFloat(amount) / selectedMembers.length;
+
+    for (const mem of selectedMembers) {
+      if (mem === username) continue;
+
+      const m = await user.findOne({ username: mem });
+      if (!m) continue;
+
+      if (!groupDoc.paymentMatrix[m.userID]) {
+        groupDoc.paymentMatrix[m.userID] = {};
+      }
+
+      groupDoc.paymentMatrix[m.userID][payer.userID] =
+        (groupDoc.paymentMatrix[m.userID][payer.userID] || 0) + splitAmount;
+    }
+
+    await groupDoc.save();
+    res.status(200).json({ message: 'Expense recorded and dues updated' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error during expense recording' });
+  }
 });
 
+
+// Dues Route
 app.post('/dues', async (req, res) => {
-  const { groupId, from, to } = req.body;
-  const fromUser = await user.findOne({ username: from });
-  const toUser = await user.findOne({ username: to });
-  const grp = await group.findOne({ groupID: groupId });
+  try {
+    const { groupId, from, to } = req.body;
 
-  if (!fromUser || !toUser || !grp) {
-    return res.status(404).json({ error: 'Missing or invalid users/group' });
+    const fromUser = await user.findOne({ username: from });
+    const toUser = await user.findOne({ username: to });
+    const grp = await group.findOne({ groupID: groupId });
+
+    if (!fromUser || !toUser || !grp || !grp.paymentMatrix) {
+      return res.status(404).json({ error: 'Invalid users or group' });
+    }
+
+    const amount = grp.paymentMatrix[fromUser.userID]?.[toUser.userID] || 0;
+    const upiUrl = `upi://pay?pa=${toUser.upiID}&pn=${encodeURIComponent(toUser.username)}&am=${amount}&cu=INR`;
+    const qrDataUrl = await QRCode.toDataURL(upiUrl);
+
+    res.status(200).json({ amount, qr: qrDataUrl });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error during dues lookup' });
   }
-
-  const amount = grp.paymentMatrix[fromUser.userID]?.[toUser.userID] || 0;
-  const upiUrl = `upi://pay?pa=${toUser.upiID}&pn=${encodeURIComponent(toUser.username)}&am=${amount}&cu=INR`;
-  const qrDataUrl = await QRCode.toDataURL(upiUrl);
-
-  res.status(200).json({ amount, qr: qrDataUrl });
 });
+
 
 // ----------------- START SERVER -----------------
 
