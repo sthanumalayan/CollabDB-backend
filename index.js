@@ -6,9 +6,13 @@ import {group} from "./models/groupschema.js"
 import cors from "cors";
 import {MongoClient} from 'mongodb'
 import QRCode from 'qrcode'
-await mongoose.connect('mongodb://localhost:27017/CollabDB')
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+});
 
-const uri = "mongodb://localhost:27017"; 
+
+const uri = process.env.MONGO_URI; 
 const client = new MongoClient(uri);
 const dbName = "CollabDB"; 
 await client.connect();
